@@ -9,14 +9,20 @@
  *   SPI1 (16 bit master)        - start of the DMA chain (HAL_DMA_Start*)
  *   DMA1 Ch1 (HRTIM1_E -> SPI)  - control ISR on the SPI1_RX DMA channel
  *   DMA1 Ch2 (SPI1_RX -> RAM)   - protection, watchdog, emergency off
+ *   COMP3 (PC1 vs DAC3 OUT1)    - hardware OCP: threshold, arming, fault latch
+ *   DAC3 OUT1 (internal)
+ *   HRTIM1 FLT5 (from COMP3)
  *   pins, labels, NVIC
  *
  * Hard-switched full bridge: one output per diagonal.
  *   TA1 = diagonal 1 (Q1 + Q4): on from period start to CMP1     (1st half)
  *   TA2 = diagonal 2 (Q2 + Q3): on from CMP2 (= T/2) to CMP3     (2nd half)
  *
+ * Hardware OCP: PC1 > DAC3 -> COMP3 -> FLT5 forces TA1/TA2 low without the
+ * CPU. The control ISR only latches the event (PWR_FAULT_OCP_HW).
+ *
  * Pin labels (main.h): DIAG1_Q1_Q4 PA8, DIAG2_Q2_Q3 PA9, ADC_V_CNVST PC8,
- * ADC_I_CNVST PC9, ADC_SCLK PB3, ADC_SDO PB4, DBG_ISR PB1.
+ * ADC_I_CNVST PC9, ADC_SCLK PA5, ADC_SDO PA6, I_SENSE PC1, DBG_ISR PB1.
  */
 
 #pragma GCC optimize ("O2")   /* keep the ISR fast even in a -O0 Debug build */
@@ -59,6 +65,8 @@ static volatile uint16_t s_adc_raw[2];           /* [0] = V, [1] = I, from DMA  
 
 static HRTIM_HandleTypeDef *s_hrtim;
 static SPI_HandleTypeDef   *s_spi;
+static COMP_HandleTypeDef  *s_comp;              /* COMP3: hardware OCP           */
+static DAC_HandleTypeDef   *s_dac;               /* DAC3 OUT1: OCP threshold      */
 static DMA_TypeDef         *s_rx_dma;            /* SPI1_RX DMA controller        */
 static uint32_t             s_rx_flag_shift;     /* channel index in ISR/IFCR     */
 
@@ -98,11 +106,23 @@ __attribute__((always_inline)) static inline void bridge_off(void)
     HRTIM1->sCommonRegs.ODISR = BRIDGE_ODIS;
 }
 
+/* interrupt lock for state changes outside the control ISR */
+#define CRITICAL_ENTER()  const uint32_t primask_ = __get_PRIMASK(); __disable_irq()
+#define CRITICAL_EXIT()   __set_PRIMASK(primask_)
+
 static void trip(uint32_t fault)
 {
+    CRITICAL_ENTER();
     bridge_off();
     s_st.fault |= fault;
     s_st.state  = PWR_STATE_FAULT;
+    CRITICAL_EXIT();
+}
+
+/* COMP3 output: true while PC1 is above the DAC3 threshold (FLT5 active) */
+__attribute__((always_inline)) static inline bool ocp_hw_active(void)
+{
+    return (s_comp != NULL) && ((s_comp->Instance->CSR & COMP_CSR_VALUE) != 0U);
 }
 
 /* Write the duty of both diagonals (taken over together at the next roll-over;
@@ -196,6 +216,37 @@ static uint32_t check_timing_config(void)
     s_st.t_sample_ns = ticks_to_ns(sample);
     s_st.t_read_v_ns = ticks_to_ns(read_v);
     s_st.t_read_i_ns = ticks_to_ns(read_i);
+    return 0U;
+}
+
+/* Hardware OCP path: PC1 -> COMP3(+), DAC3 OUT1 -> COMP3(-), COMP3 -> FLT5 -> TA1/TA2 */
+static uint32_t check_ocp_config(void)
+{
+    const uint32_t fltinr2 = HRTIM1->sCommonRegs.FLTINR2;
+    const uint32_t fltinr4 = HRTIM1->sCommonRegs.FLTINR4;
+
+    /* FLT5's internal source is COMP3 (RM0440, HRTIM fault inputs) */
+    if ((s_comp == NULL) || (s_comp->Instance != COMP3))                { return 50U; }
+    if (s_comp->Init.InputMinus != COMP_INPUT_MINUS_DAC3_CH1)          { return 51U; }
+    if (s_comp->Init.InputPlus != COMP_INPUT_PLUS_IO2)                 { return 52U; } /* PC1 */
+    if (s_comp->Init.OutputPol != COMP_OUTPUTPOL_NONINVERTED)          { return 53U; }
+    if (s_comp->Init.BlankingSrce != COMP_BLANKINGSRC_NONE)            { return 54U; }
+    if ((s_dac == NULL) || (s_dac->Instance != DAC3))                   { return 55U; }
+    /* FLT5 enabled, active high, internal source (SRC = 01) */
+    if ((fltinr2 & (HRTIM_FLTINR2_FLT5E | HRTIM_FLTINR2_FLT5P | HRTIM_FLTINR2_FLT5SRC_0 |
+                    HRTIM_FLTINR2_FLT5SRC_1)) !=
+        (HRTIM_FLTINR2_FLT5E | HRTIM_FLTINR2_FLT5P | HRTIM_FLTINR2_FLT5SRC_0))
+                                                                        { return 56U; }
+    /* no blanking window, no fault counter: every event trips */
+    if ((fltinr4 & (HRTIM_FLTINR4_FLT5BLKE | HRTIM_FLTINR4_FLT5CNT)) != 0U) { return 57U; }
+    /* Timer A (bridge) reacts to FLT5 and drives both outputs inactive */
+    if ((TIM_A.FLTxR & HRTIM_FLTR_FLT5EN) == 0U)                        { return 58U; }
+    if ((TIM_A.OUTxR & (HRTIM_OUTR_FAULT1 | HRTIM_OUTR_FAULT2)) !=
+        (HRTIM_OUTR_FAULT1_1 | HRTIM_OUTR_FAULT2_1))                    { return 59U; }
+    /* scaling from pwr_config.h: the start-up level must fit the DAC range */
+    if (!(PWR_OCP_HW_SENSE_V_PER_A > 0.0f))                             { return 60U; }
+    const float v_trip = PWR_OCP_HW_A * PWR_OCP_HW_SENSE_V_PER_A + PWR_OCP_HW_SENSE_OFFSET_V;
+    if (!(v_trip > 0.0f) || !(v_trip < PWR_DAC_VREF_V))                 { return 61U; }
     return 0U;
 }
 
@@ -295,7 +346,18 @@ PWR_RAMFUNC void PWR_ADC_DMA_IRQHandler(void)
     pwr_state_t st = s_st.state;
     float d = 0.0f;
 
-    /* software protection (add HRTIM FLT inputs for hardware protection) */
+    /* hardware OCP: FLT5 has already forced TA1/TA2 low (asynchronously, without
+     * the CPU). Latch it here, in every state, so that the bridge stays off. */
+    if ((HRTIM1->sCommonRegs.ISR & HRTIM_ISR_FLT5) != 0U)
+    {
+        HRTIM1->sCommonRegs.ICR = HRTIM_ICR_FLT5C;
+        bridge_off();                            /* TA1/TA2: FAULT -> IDLE state  */
+        s_st.fault |= PWR_FAULT_OCP_HW;
+        s_st.ocp_hw_trips++;
+        st = PWR_STATE_FAULT;
+    }
+
+    /* software protection on the ADC readings */
     if ((st == PWR_STATE_RUN) || (st == PWR_STATE_ARMED))
     {
         uint32_t f = 0U;
@@ -307,6 +369,11 @@ PWR_RAMFUNC void PWR_ADC_DMA_IRQHandler(void)
             s_st.fault |= f;
             st = PWR_STATE_FAULT;
         }
+    }
+
+    if ((st == PWR_STATE_ARMED) && (s_st.fault != PWR_FAULT_NONE))
+    {
+        st = PWR_STATE_FAULT;                    /* never enable over a latched fault */
     }
 
     if (st == PWR_STATE_ARMED)
@@ -355,6 +422,7 @@ PWR_RAMFUNC void PWR_ADC_DMA_IRQHandler(void)
     s_st.v_ref  = s_vref;
     s_st.duty   = d;
     s_st.state  = st;
+    s_st.ocp_hw_comp = ocp_hw_active() ? 1U : 0U;
     s_st.isr_count++;
 
     const uint32_t cnt = TIM_A.CNTxR;
@@ -368,10 +436,13 @@ PWR_RAMFUNC void PWR_ADC_DMA_IRQHandler(void)
 /* -------------------------------------------------------------------------- */
 /* Public API                                                                 */
 /* -------------------------------------------------------------------------- */
-void pwr_init(HRTIM_HandleTypeDef *hhrtim, SPI_HandleTypeDef *hspi)
+void pwr_init(HRTIM_HandleTypeDef *hhrtim, SPI_HandleTypeDef *hspi,
+              COMP_HandleTypeDef *hcomp, DAC_HandleTypeDef *hdac)
 {
     s_hrtim = hhrtim;
     s_spi   = hspi;
+    s_comp  = hcomp;
+    s_dac   = hdac;
     s_running = false;
     s_st.state = PWR_STATE_OFF;
     s_st.fault = PWR_FAULT_NONE;
@@ -401,6 +472,39 @@ void pwr_init(HRTIM_HandleTypeDef *hhrtim, SPI_HandleTypeDef *hspi)
     s_st.f_sw_hz    = (uint32_t)(s_fhr / per);
     s_st.spi_sck_hz = HAL_RCC_GetPCLK2Freq() >> ((s_spi->Init.BaudRatePrescaler >> SPI_CR1_BR_Pos) + 1U);
     s_vref_step     = PWR_VREF_SLEW_V_PER_S / (float)s_st.f_sw_hz;
+
+    /* --- hardware OCP first: threshold, comparator, FLT5 lock ------------- */
+    s_st.config_check = check_ocp_config();
+    if (s_st.config_check != 0U)
+    {
+        s_st.fault |= PWR_FAULT_CONFIG;          /* bridge stays locked           */
+        s_st.state  = PWR_STATE_FAULT;
+    }
+    if ((s_dac != NULL) && (s_dac->Instance == DAC3) &&
+        (s_comp != NULL) && (s_comp->Instance == COMP3))
+    {
+        if (HAL_DAC_Start(s_dac, DAC_CHANNEL_1) != HAL_OK) { Error_Handler(); }
+        (void)pwr_set_ocp_hw(PWR_OCP_HW_A);
+        if (HAL_COMP_Start(s_comp) != HAL_OK)              { Error_Handler(); }
+        if (HAL_COMP_Lock(s_comp) != HAL_OK)               { Error_Handler(); }
+        HAL_Delay(1U);                           /* DAC settling, COMP start-up   */
+        HRTIM1->sCommonRegs.ICR = HRTIM_ICR_FLT5C;   /* discard start-up events   */
+        bridge_off();                            /* TA1/TA2 in IDLE, not FAULT    */
+        if (s_st.config_check == 0U)
+        {
+            /* FLT5 configuration read-only until reset (enable bit included) */
+            HRTIM1->sCommonRegs.FLTINR2 |= HRTIM_FLTINR2_FLT5LCK;
+        }
+        if (ocp_hw_active())                     /* already above the threshold   */
+        {
+            s_st.fault |= PWR_FAULT_OCP_HW;
+            s_st.state  = PWR_STATE_FAULT;
+        }
+    }
+    if (s_st.config_check != 0U)
+    {
+        return;                                  /* nothing else is started       */
+    }
 
     s_st.config_check = check_dma_config();
     if (s_st.config_check != 0U)
@@ -480,26 +584,66 @@ void pwr_set_current(float amps)
 
 bool pwr_output_on(void)
 {
-    if (!s_running || (s_st.fault != PWR_FAULT_NONE)) { return false; }
-    if (s_st.state == PWR_STATE_OFF) { s_st.state = PWR_STATE_ARMED; }
-    return true;
+    bool ok = false;
+    CRITICAL_ENTER();                            /* the ISR also writes the state */
+    if (ocp_hw_active())
+    {
+        s_st.fault |= PWR_FAULT_OCP_HW;          /* above the trip level already  */
+        s_st.state  = PWR_STATE_FAULT;
+    }
+    else if (s_running && (s_st.fault == PWR_FAULT_NONE))
+    {
+        if (s_st.state == PWR_STATE_OFF) { s_st.state = PWR_STATE_ARMED; }
+        ok = true;
+    }
+    CRITICAL_EXIT();
+    return ok;
 }
 
 void pwr_output_off(void)
 {
+    CRITICAL_ENTER();
     s_st.state = PWR_STATE_OFF;   /* first: the ISR will not re-enable anything */
     bridge_off();
+    CRITICAL_EXIT();
 }
 
 void pwr_clear_fault(void)
 {
+    CRITICAL_ENTER();
     if (s_st.state == PWR_STATE_FAULT)
     {
         /* CONFIG, DMA and WATCHDOG faults stop the measurement chain and need
          * a reset (and, for CONFIG, a corrected .ioc) */
-        s_st.fault &= ~(PWR_FAULT_OVP | PWR_FAULT_OCP);
+        uint32_t clr = PWR_FAULT_OVP | PWR_FAULT_OCP;
+        if (!ocp_hw_active())                    /* current below the trip level */
+        {
+            bridge_off();                        /* TA1/TA2: FAULT -> IDLE state  */
+            HRTIM1->sCommonRegs.ICR = HRTIM_ICR_FLT5C;
+            clr |= PWR_FAULT_OCP_HW;
+        }
+        s_st.fault &= ~clr;
         if (s_st.fault == PWR_FAULT_NONE) { s_st.state = PWR_STATE_OFF; }
     }
+    CRITICAL_EXIT();
+}
+
+float pwr_set_ocp_hw(float amps)
+{
+    if (s_dac == NULL) { return 0.0f; }
+    if (!(amps >= 0.0f)) { amps = 0.0f; }
+
+    float code = (amps * PWR_OCP_HW_SENSE_V_PER_A + PWR_OCP_HW_SENSE_OFFSET_V)
+                 * (4096.0f / PWR_DAC_VREF_V);
+    if (!(code >= 0.0f))  { code = 0.0f; }
+    if (code > 4095.0f)   { code = 4095.0f; }
+    const uint32_t c = (uint32_t)(code + 0.5f);              /* 0 ... 4095    */
+
+    (void)HAL_DAC_SetValue(s_dac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, c);
+    s_st.ocp_hw_dac = (uint16_t)c;
+    s_st.ocp_hw_a   = ((float)c * (PWR_DAC_VREF_V / 4096.0f) - PWR_OCP_HW_SENSE_OFFSET_V)
+                      / PWR_OCP_HW_SENSE_V_PER_A;
+    return s_st.ocp_hw_a;
 }
 
 const pwr_status_t *pwr_status(void)

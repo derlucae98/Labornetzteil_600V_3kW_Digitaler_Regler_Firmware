@@ -87,6 +87,109 @@ void HAL_MspInit(void)
 }
 
 /**
+  * @brief COMP MSP Initialization
+  * This function configures the hardware resources used in this example
+  * @param hcomp: COMP handle pointer
+  * @retval None
+  */
+void HAL_COMP_MspInit(COMP_HandleTypeDef* hcomp)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  if(hcomp->Instance==COMP3)
+  {
+    /* USER CODE BEGIN COMP3_MspInit 0 */
+
+    /* USER CODE END COMP3_MspInit 0 */
+
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    /**COMP3 GPIO Configuration
+    PC1     ------> COMP3_INP
+    */
+    GPIO_InitStruct.Pin = I_SENSE_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(I_SENSE_GPIO_Port, &GPIO_InitStruct);
+
+    /* USER CODE BEGIN COMP3_MspInit 1 */
+
+    /* USER CODE END COMP3_MspInit 1 */
+
+  }
+
+}
+
+/**
+  * @brief COMP MSP De-Initialization
+  * This function freeze the hardware resources used in this example
+  * @param hcomp: COMP handle pointer
+  * @retval None
+  */
+void HAL_COMP_MspDeInit(COMP_HandleTypeDef* hcomp)
+{
+  if(hcomp->Instance==COMP3)
+  {
+    /* USER CODE BEGIN COMP3_MspDeInit 0 */
+
+    /* USER CODE END COMP3_MspDeInit 0 */
+
+    /**COMP3 GPIO Configuration
+    PC1     ------> COMP3_INP
+    */
+    HAL_GPIO_DeInit(I_SENSE_GPIO_Port, I_SENSE_Pin);
+
+    /* USER CODE BEGIN COMP3_MspDeInit 1 */
+
+    /* USER CODE END COMP3_MspDeInit 1 */
+  }
+
+}
+
+/**
+  * @brief DAC MSP Initialization
+  * This function configures the hardware resources used in this example
+  * @param hdac: DAC handle pointer
+  * @retval None
+  */
+void HAL_DAC_MspInit(DAC_HandleTypeDef* hdac)
+{
+  if(hdac->Instance==DAC3)
+  {
+    /* USER CODE BEGIN DAC3_MspInit 0 */
+
+    /* USER CODE END DAC3_MspInit 0 */
+    /* Peripheral clock enable */
+    __HAL_RCC_DAC3_CLK_ENABLE();
+    /* USER CODE BEGIN DAC3_MspInit 1 */
+
+    /* USER CODE END DAC3_MspInit 1 */
+
+  }
+
+}
+
+/**
+  * @brief DAC MSP De-Initialization
+  * This function freeze the hardware resources used in this example
+  * @param hdac: DAC handle pointer
+  * @retval None
+  */
+void HAL_DAC_MspDeInit(DAC_HandleTypeDef* hdac)
+{
+  if(hdac->Instance==DAC3)
+  {
+    /* USER CODE BEGIN DAC3_MspDeInit 0 */
+
+    /* USER CODE END DAC3_MspDeInit 0 */
+    /* Peripheral clock disable */
+    __HAL_RCC_DAC3_CLK_DISABLE();
+    /* USER CODE BEGIN DAC3_MspDeInit 1 */
+
+    /* USER CODE END DAC3_MspDeInit 1 */
+  }
+
+}
+
+/**
   * @brief HRTIM MSP Initialization
   * This function configures the hardware resources used in this example
   * @param hhrtim: HRTIM handle pointer
@@ -207,11 +310,11 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* hspi)
     /* Peripheral clock enable */
     __HAL_RCC_SPI1_CLK_ENABLE();
 
-    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
     /**SPI1 GPIO Configuration
-    PB3     ------> SPI1_SCK
-    PB4     ------> SPI1_MISO
-    PB5     ------> SPI1_MOSI
+    PA5     ------> SPI1_SCK
+    PA6     ------> SPI1_MISO
+    PA7     ------> SPI1_MOSI
     */
     GPIO_InitStruct.Pin = ADC_SCLK_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
@@ -277,11 +380,11 @@ void HAL_SPI_MspDeInit(SPI_HandleTypeDef* hspi)
     __HAL_RCC_SPI1_CLK_DISABLE();
 
     /**SPI1 GPIO Configuration
-    PB3     ------> SPI1_SCK
-    PB4     ------> SPI1_MISO
-    PB5     ------> SPI1_MOSI
+    PA5     ------> SPI1_SCK
+    PA6     ------> SPI1_MISO
+    PA7     ------> SPI1_MOSI
     */
-    HAL_GPIO_DeInit(GPIOB, ADC_SCLK_Pin|ADC_SDO_Pin|SPI1_MOSI_NC_Pin);
+    HAL_GPIO_DeInit(GPIOA, ADC_SCLK_Pin|ADC_SDO_Pin|SPI1_MOSI_NC_Pin);
 
     /* SPI1 DMA DeInit */
     HAL_DMA_DeInit(hspi->hdmarx);

@@ -40,6 +40,10 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+COMP_HandleTypeDef hcomp3;
+
+DAC_HandleTypeDef hdac3;
+
 HRTIM_HandleTypeDef hhrtim1;
 DMA_HandleTypeDef hdma_hrtim1_e;
 
@@ -56,6 +60,8 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_HRTIM1_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_COMP3_Init(void);
+static void MX_DAC3_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -97,11 +103,14 @@ int main(void)
   MX_DMA_Init();
   MX_HRTIM1_Init();
   MX_SPI1_Init();
+  MX_COMP3_Init();
+  MX_DAC3_Init();
   /* USER CODE BEGIN 2 */
 
-  /* ADC recalibration (~0.6 s), DMA chain start, HRTIM counters start.
+  /* Hardware OCP (DAC3 -> COMP3 -> HRTIM FLT5) armed at PWR_OCP_HW_A,
+   * ADC recalibration (~0.6 s), DMA chain start, HRTIM counters start.
    * Afterwards both ADCs are sampled every period, the bridge stays OFF. */
-  pwr_init(&hhrtim1, &hspi1);
+  pwr_init(&hhrtim1, &hspi1, &hcomp3, &hdac3);
 
   pwr_set_current(1.0f);    /* [A] current limit                          */
   pwr_set_voltage(5.0f);    /* [V] ramps at PWR_VREF_SLEW_V_PER_S         */
@@ -175,6 +184,85 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief COMP3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_COMP3_Init(void)
+{
+
+  /* USER CODE BEGIN COMP3_Init 0 */
+
+  /* USER CODE END COMP3_Init 0 */
+
+  /* USER CODE BEGIN COMP3_Init 1 */
+
+  /* USER CODE END COMP3_Init 1 */
+  hcomp3.Instance = COMP3;
+  hcomp3.Init.InputPlus = COMP_INPUT_PLUS_IO2;
+  hcomp3.Init.InputMinus = COMP_INPUT_MINUS_DAC3_CH1;
+  hcomp3.Init.OutputPol = COMP_OUTPUTPOL_NONINVERTED;
+  hcomp3.Init.Hysteresis = COMP_HYSTERESIS_NONE;
+  hcomp3.Init.BlankingSrce = COMP_BLANKINGSRC_NONE;
+  hcomp3.Init.TriggerMode = COMP_TRIGGERMODE_NONE;
+  if (HAL_COMP_Init(&hcomp3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN COMP3_Init 2 */
+
+  /* USER CODE END COMP3_Init 2 */
+
+}
+
+/**
+  * @brief DAC3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_DAC3_Init(void)
+{
+
+  /* USER CODE BEGIN DAC3_Init 0 */
+
+  /* USER CODE END DAC3_Init 0 */
+
+  DAC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN DAC3_Init 1 */
+
+  /* USER CODE END DAC3_Init 1 */
+
+  /** DAC Initialization
+  */
+  hdac3.Instance = DAC3;
+  if (HAL_DAC_Init(&hdac3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** DAC channel OUT1 config
+  */
+  sConfig.DAC_HighFrequency = DAC_HIGH_FREQUENCY_INTERFACE_MODE_AUTOMATIC;
+  sConfig.DAC_DMADoubleDataMode = DISABLE;
+  sConfig.DAC_SignedFormat = DISABLE;
+  sConfig.DAC_SampleAndHold = DAC_SAMPLEANDHOLD_DISABLE;
+  sConfig.DAC_Trigger = DAC_TRIGGER_NONE;
+  sConfig.DAC_Trigger2 = DAC_TRIGGER_NONE;
+  sConfig.DAC_OutputBuffer = DAC_OUTPUTBUFFER_DISABLE;
+  sConfig.DAC_ConnectOnChipPeripheral = DAC_CHIPCONNECT_INTERNAL;
+  sConfig.DAC_UserTrimming = DAC_TRIMMING_FACTORY;
+  if (HAL_DAC_ConfigChannel(&hdac3, &sConfig, DAC_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN DAC3_Init 2 */
+
+  /* USER CODE END DAC3_Init 2 */
+
+}
+
+/**
   * @brief HRTIM1 Initialization Function
   * @param None
   * @retval None
@@ -186,6 +274,8 @@ static void MX_HRTIM1_Init(void)
 
   /* USER CODE END HRTIM1_Init 0 */
 
+  HRTIM_FaultBlankingCfgTypeDef pFaultBlkCfg = {0};
+  HRTIM_FaultCfgTypeDef pFaultCfg = {0};
   HRTIM_TimeBaseCfgTypeDef pTimeBaseCfg = {0};
   HRTIM_TimerCtlTypeDef pTimerCtl = {0};
   HRTIM_TimerCfgTypeDef pTimerCfg = {0};
@@ -210,6 +300,25 @@ static void MX_HRTIM1_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_HRTIM_FaultPrescalerConfig(&hhrtim1, HRTIM_FAULTPRESCALER_DIV1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  pFaultBlkCfg.Threshold = 0;
+  pFaultBlkCfg.ResetMode = HRTIM_FAULTCOUNTERRST_UNCONDITIONAL;
+  if (HAL_HRTIM_FaultCounterConfig(&hhrtim1, HRTIM_FAULT_5, &pFaultBlkCfg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  pFaultCfg.Source = HRTIM_FAULTSOURCE_INTERNAL;
+  pFaultCfg.Polarity = HRTIM_FAULTPOLARITY_HIGH;
+  pFaultCfg.Filter = HRTIM_FAULTFILTER_NONE;
+  pFaultCfg.Lock = HRTIM_FAULTLOCK_READWRITE;
+  if (HAL_HRTIM_FaultConfig(&hhrtim1, HRTIM_FAULT_5, &pFaultCfg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  HAL_HRTIM_FaultModeCtl(&hhrtim1, HRTIM_FAULT_5, HRTIM_FAULTMODECTL_ENABLED);
   pTimeBaseCfg.Period = 54400;
   pTimeBaseCfg.RepetitionCounter = 0x00;
   pTimeBaseCfg.PrescalerRatio = HRTIM_PRESCALERRATIO_MUL32;
@@ -242,8 +351,8 @@ static void MX_HRTIM1_Init(void)
   pTimerCfg.BurstMode = HRTIM_TIMERBURSTMODE_MAINTAINCLOCK;
   pTimerCfg.RepetitionUpdate = HRTIM_UPDATEONREPETITION_DISABLED;
   pTimerCfg.PushPull = HRTIM_TIMPUSHPULLMODE_DISABLED;
-  pTimerCfg.FaultEnable = HRTIM_TIMFAULTENABLE_NONE;
-  pTimerCfg.FaultLock = HRTIM_TIMFAULTLOCK_READWRITE;
+  pTimerCfg.FaultEnable = HRTIM_TIMFAULTENABLE_FAULT5;
+  pTimerCfg.FaultLock = HRTIM_TIMFAULTLOCK_READONLY;
   pTimerCfg.DeadTimeInsertion = HRTIM_TIMDEADTIMEINSERTION_DISABLED;
   pTimerCfg.DelayedProtectionMode = HRTIM_TIMER_A_B_C_DELAYEDPROTECTION_DISABLED;
   pTimerCfg.UpdateTrigger = HRTIM_TIMUPDATETRIGGER_NONE;
@@ -257,6 +366,8 @@ static void MX_HRTIM1_Init(void)
   pTimerCfg.DMARequests = HRTIM_TIM_DMA_CMP2|HRTIM_TIM_DMA_CMP3;
   pTimerCfg.DMASrcAddress = (uint32_t)&pwr_spi_dummy;
   pTimerCfg.DMADstAddress = (uint32_t)&SPI1->DR;
+  pTimerCfg.FaultEnable = HRTIM_TIMFAULTENABLE_NONE;
+  pTimerCfg.FaultLock = HRTIM_TIMFAULTLOCK_READWRITE;
   pTimerCfg.DelayedProtectionMode = HRTIM_TIMER_D_E_DELAYEDPROTECTION_DISABLED;
   if (HAL_HRTIM_WaveformTimerConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_E, &pTimerCfg) != HAL_OK)
   {
@@ -285,7 +396,7 @@ static void MX_HRTIM1_Init(void)
   pOutputCfg.ResetSource = HRTIM_OUTPUTRESET_TIMCMP1;
   pOutputCfg.IdleMode = HRTIM_OUTPUTIDLEMODE_NONE;
   pOutputCfg.IdleLevel = HRTIM_OUTPUTIDLELEVEL_INACTIVE;
-  pOutputCfg.FaultLevel = HRTIM_OUTPUTFAULTLEVEL_NONE;
+  pOutputCfg.FaultLevel = HRTIM_OUTPUTFAULTLEVEL_INACTIVE;
   pOutputCfg.ChopperModeEnable = HRTIM_OUTPUTCHOPPERMODE_DISABLED;
   pOutputCfg.BurstModeEntryDelayed = HRTIM_OUTPUTBURSTMODEENTRY_REGULAR;
   if (HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_OUTPUT_TA1, &pOutputCfg) != HAL_OK)
@@ -300,6 +411,7 @@ static void MX_HRTIM1_Init(void)
   }
   pOutputCfg.SetSource = HRTIM_OUTPUTSET_TIMCMP1;
   pOutputCfg.ResetSource = HRTIM_OUTPUTRESET_TIMCMP2;
+  pOutputCfg.FaultLevel = HRTIM_OUTPUTFAULTLEVEL_NONE;
   if (HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_E, HRTIM_OUTPUT_TE1, &pOutputCfg) != HAL_OK)
   {
     Error_Handler();
@@ -413,9 +525,9 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(DBG_ISR_GPIO_Port, DBG_ISR_Pin, GPIO_PIN_RESET);

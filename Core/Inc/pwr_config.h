@@ -7,6 +7,7 @@
  *   - switching period, compare values (sampling / read instants)  -> HRTIM1
  *   - SPI clock, data size, clock phase                             -> SPI1
  *   - DMA channels, priorities                                     -> DMA
+ *   - hardware OCP path PC1 -> COMP3 <- DAC3, COMP3 -> HRTIM FLT5   -> COMP3, DAC3, HRTIM1
  *   - pins and labels                                               -> Pinout
  * pwr_init() reads those settings back from the peripherals and checks them
  * against the limits below (fault PWR_FAULT_CONFIG if they do not fit).
@@ -69,7 +70,26 @@
 #define PWR_WATCHDOG_MS         2U      /* no control ISR for this long -> trip */
 
 /* ========================================================================== */
-/* 6. 3p3z compensators                                                       */
+/* 6. Hardware over-current trip (no CPU involved)                            */
+/*                                                                            */
+/*    PC1 (I_SENSE) -> COMP3 (+)                                              */
+/*    DAC3 OUT1     -> COMP3 (-)      threshold, set here / pwr_set_ocp_hw()  */
+/*    COMP3 output  -> HRTIM FLT5     forces TA1/TA2 low (asynchronous path)  */
+/*                                                                            */
+/*    Trip when V(PC1) > V(DAC3). The DAC code is computed from the current   */
+/*    with the sense scaling below:                                           */
+/*      V(PC1) = I * PWR_OCP_HW_SENSE_V_PER_A + PWR_OCP_HW_SENSE_OFFSET_V     */
+/*    The trip latches (PWR_FAULT_OCP_HW); pwr_clear_fault() releases it only */
+/*    when COMP3 is low again.                                                */
+/*    SCALING PLACEHOLDERS - set them to your current sense circuit!          */
+/* ========================================================================== */
+#define PWR_OCP_HW_A                 11.5f  /* trip level at start-up [A]        */
+#define PWR_OCP_HW_SENSE_V_PER_A     0.25f  /* PC1 volts per ampere (> 0)        */
+#define PWR_OCP_HW_SENSE_OFFSET_V    0.0f   /* PC1 volts at 0 A                  */
+#define PWR_DAC_VREF_V               3.3f   /* DAC3 reference = VREF+ (= VDDA)   */
+
+/* ========================================================================== */
+/* 7. 3p3z compensators                                                       */
 /*                                                                            */
 /*    u[n] = B0*e[n] + B1*e[n-1] + B2*e[n-2] + B3*e[n-3]                      */
 /*                   + A1*u[n-1] + A2*u[n-2] + A3*u[n-3]                      */
@@ -106,7 +126,7 @@
 #define PWR_CC_A3               0.0f
 
 /* ========================================================================== */
-/* 7. Bring-up helpers                                                        */
+/* 8. Bring-up helpers                                                        */
 /* ========================================================================== */
 #define PWR_OPEN_LOOP           0       /* 1: ignore both loops, fixed duty      */
 #define PWR_OPEN_LOOP_PERMILLE  100     /* fixed duty in open-loop mode (1/1000) */
