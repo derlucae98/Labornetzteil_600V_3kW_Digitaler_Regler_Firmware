@@ -1,0 +1,32 @@
+# ==========================================
+# STM32CubeIDE .gitignore
+# ==========================================
+
+# Build-Ordner (Enthalten Binärdateien und Compiler-Zwischenstufen)
+Debug/
+Release/
+
+# Kompilierte Objekte und Abhängigkeiten
+*.o
+*.d
+*.su
+
+# Linker-Output und Binärdateien
+*.elf
+*.map
+*.bin
+*.hex
+*.srec
+*.lst
+
+# IDE-spezifische Metadaten (Nutzerpräferenzen und Historie)
+.metadata/
+
+# Debug- und Startkonfigurationen (Optional auskommentieren, falls geteilt werden soll)
+*.launch
+
+# Backup- und temporäre Dateien
+*.bak
+*.log
+
+
