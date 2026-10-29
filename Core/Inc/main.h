@@ -49,6 +49,8 @@ extern "C" {
 
 /* USER CODE END EM */
 
+void HAL_HRTIM_MspPostInit(HRTIM_HandleTypeDef *hhrtim);
+
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
 
@@ -57,6 +59,22 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define DBG_ISR_Pin GPIO_PIN_1
+#define DBG_ISR_GPIO_Port GPIOB
+#define ADC_V_CNVST_Pin GPIO_PIN_8
+#define ADC_V_CNVST_GPIO_Port GPIOC
+#define ADC_I_CNVST_Pin GPIO_PIN_9
+#define ADC_I_CNVST_GPIO_Port GPIOC
+#define DIAG1_Q1_Q4_Pin GPIO_PIN_8
+#define DIAG1_Q1_Q4_GPIO_Port GPIOA
+#define DIAG2_Q2_Q3_Pin GPIO_PIN_9
+#define DIAG2_Q2_Q3_GPIO_Port GPIOA
+#define ADC_SCLK_Pin GPIO_PIN_3
+#define ADC_SCLK_GPIO_Port GPIOB
+#define ADC_SDO_Pin GPIO_PIN_4
+#define ADC_SDO_GPIO_Port GPIOB
+#define SPI1_MOSI_NC_Pin GPIO_PIN_5
+#define SPI1_MOSI_NC_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
