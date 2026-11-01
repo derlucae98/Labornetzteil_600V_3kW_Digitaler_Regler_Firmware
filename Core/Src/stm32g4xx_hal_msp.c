@@ -236,9 +236,9 @@ void HAL_HRTIM_MspPostInit(HRTIM_HandleTypeDef* hhrtim)
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   if(hhrtim->Instance==HRTIM1)
   {
-  /* USER CODE BEGIN HRTIM1_MspPostInit 0 */
+    /* USER CODE BEGIN HRTIM1_MspPostInit 0 */
 
-  /* USER CODE END HRTIM1_MspPostInit 0 */
+    /* USER CODE END HRTIM1_MspPostInit 0 */
 
     __HAL_RCC_GPIOC_CLK_ENABLE();
     __HAL_RCC_GPIOA_CLK_ENABLE();
@@ -262,9 +262,9 @@ void HAL_HRTIM_MspPostInit(HRTIM_HandleTypeDef* hhrtim)
     GPIO_InitStruct.Alternate = GPIO_AF13_HRTIM1;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /* USER CODE BEGIN HRTIM1_MspPostInit 1 */
+    /* USER CODE BEGIN HRTIM1_MspPostInit 1 */
 
-  /* USER CODE END HRTIM1_MspPostInit 1 */
+    /* USER CODE END HRTIM1_MspPostInit 1 */
   }
 
 }

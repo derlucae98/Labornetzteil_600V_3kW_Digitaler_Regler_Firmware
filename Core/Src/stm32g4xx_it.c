@@ -57,6 +57,7 @@
 
 /* External variables --------------------------------------------------------*/
 extern DMA_HandleTypeDef hdma_hrtim1_e;
+extern DMA_HandleTypeDef hdma_spi1_rx;
 /* USER CODE BEGIN EV */
 
 /* USER CODE END EV */

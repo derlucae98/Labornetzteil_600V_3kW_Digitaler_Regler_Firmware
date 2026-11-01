@@ -115,8 +115,8 @@ int main(void)
   pwr_set_current(1.0f);    /* [A] current limit                          */
   pwr_set_voltage(5.0f);    /* [V] ramps at PWR_VREF_SLEW_V_PER_S         */
 
-  /* Bring-up: enable the bridge deliberately (debugger or command), e.g.
-   * (void)pwr_output_on();                                                 */
+  /* Bring-up: enable the bridge deliberately (debugger or command), e.g.*/
+  pwr_output_on();
 
   /* USER CODE END 2 */
 
@@ -310,6 +310,10 @@ static void MX_HRTIM1_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_HRTIM_FaultCounterConfig(&hhrtim1, HRTIM_FAULT_5, &pFaultBlkCfg) != HAL_OK)
+  {
+    Error_Handler();
+  }
   pFaultCfg.Source = HRTIM_FAULTSOURCE_INTERNAL;
   pFaultCfg.Polarity = HRTIM_FAULTPOLARITY_HIGH;
   pFaultCfg.Filter = HRTIM_FAULTFILTER_NONE;
@@ -403,12 +407,6 @@ static void MX_HRTIM1_Init(void)
   {
     Error_Handler();
   }
-  pOutputCfg.SetSource = HRTIM_OUTPUTSET_TIMCMP2;
-  pOutputCfg.ResetSource = HRTIM_OUTPUTRESET_TIMCMP3;
-  if (HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_OUTPUT_TA2, &pOutputCfg) != HAL_OK)
-  {
-    Error_Handler();
-  }
   pOutputCfg.SetSource = HRTIM_OUTPUTSET_TIMCMP1;
   pOutputCfg.ResetSource = HRTIM_OUTPUTRESET_TIMCMP2;
   pOutputCfg.FaultLevel = HRTIM_OUTPUTFAULTLEVEL_NONE;
@@ -416,7 +414,15 @@ static void MX_HRTIM1_Init(void)
   {
     Error_Handler();
   }
+  pOutputCfg.SetSource = HRTIM_OUTPUTSET_TIMCMP2;
   pOutputCfg.ResetSource = HRTIM_OUTPUTRESET_TIMCMP3;
+  pOutputCfg.FaultLevel = HRTIM_OUTPUTFAULTLEVEL_INACTIVE;
+  if (HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_OUTPUT_TA2, &pOutputCfg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  pOutputCfg.SetSource = HRTIM_OUTPUTSET_TIMCMP1;
+  pOutputCfg.FaultLevel = HRTIM_OUTPUTFAULTLEVEL_NONE;
   if (HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_E, HRTIM_OUTPUT_TE2, &pOutputCfg) != HAL_OK)
   {
     Error_Handler();
