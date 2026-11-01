@@ -18,6 +18,13 @@
  *   TA1 = diagonal 1 (Q1 + Q4): on from period start to CMP1     (1st half)
  *   TA2 = diagonal 2 (Q2 + Q3): on from CMP2 (= T/2) to CMP3     (2nd half)
  *
+ * ADC sampling position (Timer E CMP1..3), chosen per period with the duty:
+ *   low duty : off-time after diagonal 1 turns off  (CubeMX compare values)
+ *   high duty: on-time of diagonal 2, PWR_SAMPLE_ON_SETTLE_NS after it turns on
+ *              (same compare spacing, shifted; computed in pwr_init())
+ *   Switch with hysteresis (PWR_SAMPLE_HI_ENTER/EXIT_PERMILLE). The PWM itself
+ *   is not affected; both positions are valid in the hysteresis band.
+ *
  * Hardware OCP: PC1 > DAC3 -> COMP3 -> FLT5 forces TA1/TA2 low without the
  * CPU. The control ISR only latches the event (PWR_FAULT_OCP_HW).
  *
@@ -84,7 +91,14 @@ static uint32_t s_half;                          /* T/2: Q2/Q3 turn-on          
 static float    s_half_f;
 static uint32_t s_ton_min;
 static uint32_t s_ton_max;
-static uint32_t s_read_i;                        /* Timer E CMP3                  */
+
+/* ADC sampling position: [0] = off-time (CubeMX), [1] = on-time of diagonal 2 */
+typedef struct { uint32_t cmp1, cmp2, cmp3; } te_cmp_t;
+static te_cmp_t s_te[2];
+static uint32_t s_ton_hi_enter;                  /* on-time above: use [1]        */
+static uint32_t s_ton_hi_exit;                   /* on-time below: back to [0]    */
+static uint32_t s_pos_next;                      /* position written for next period */
+static uint32_t s_pos_cur;                       /* position of this period's sample */
 
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
@@ -125,8 +139,10 @@ __attribute__((always_inline)) static inline bool ocp_hw_active(void)
     return (s_comp != NULL) && ((s_comp->Instance->CSR & COMP_CSR_VALUE) != 0U);
 }
 
-/* Write the duty of both diagonals (taken over together at the next roll-over;
- * update disable makes the pair atomic even if the write straddles it). */
+/* Write the duty of both diagonals and the ADC sampling position for the same
+ * period. Timer A and E roll over together; update disable makes the group
+ * atomic, so duty and sampling position always change at the same period start
+ * (or, if the write straddles it, together one period later). */
 __attribute__((always_inline)) static inline void set_duty(float d)
 {
     if (!(d >= 0.0f))       { d = 0.0f; }
@@ -136,10 +152,22 @@ __attribute__((always_inline)) static inline void set_duty(float d)
     if (ton < s_ton_min) { ton = s_ton_min; }
     if (ton > s_ton_max) { ton = s_ton_max; }
 
-    HRTIM1->sCommonRegs.CR1 |= HRTIM_CR1_TAUDIS;
+    uint32_t pos = s_pos_next;                   /* hysteresis on the on-time     */
+    if (ton > s_ton_hi_enter)     { pos = 1U; }
+    else if (ton < s_ton_hi_exit) { pos = 0U; }
+
+    HRTIM1->sCommonRegs.CR1 |= (HRTIM_CR1_TAUDIS | HRTIM_CR1_TEUDIS);
     TIM_A.CMP1xR = ton;
     TIM_A.CMP3xR = s_half + ton;
-    HRTIM1->sCommonRegs.CR1 &= ~HRTIM_CR1_TAUDIS;
+    if (pos != s_pos_next)
+    {
+        TIM_E.CMP1xR = s_te[pos].cmp1;
+        TIM_E.CMP2xR = s_te[pos].cmp2;
+        TIM_E.CMP3xR = s_te[pos].cmp3;
+        s_pos_next = pos;
+        s_st.sample_switches++;
+    }
+    HRTIM1->sCommonRegs.CR1 &= ~(HRTIM_CR1_TAUDIS | HRTIM_CR1_TEUDIS);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -201,21 +229,59 @@ static uint32_t check_timing_config(void)
     const uint32_t frame  = ns_to_ticks((uint32_t)((16ULL * 1000000000ULL
                                          + s_st.spi_sck_hz - 1U) / s_st.spi_sck_hz));
 
+    const uint32_t settle_off = ns_to_ticks(PWR_SAMPLE_SETTLE_NS);
+    const uint32_t settle_on  = ns_to_ticks(PWR_SAMPLE_ON_SETTLE_NS);
+    const uint32_t tcnv       = ns_to_ticks(PWR_ADC_TCNV_NS);
+    const uint32_t budget     = ns_to_ticks(PWR_COMPUTE_BUDGET_NS);
+    const uint32_t ton_enter  = (uint32_t)(((uint64_t)s_half * PWR_SAMPLE_HI_ENTER_PERMILLE) / 1000U);
+    const uint32_t ton_exit   = (uint32_t)(((uint64_t)s_half * PWR_SAMPLE_HI_EXIT_PERMILLE) / 1000U);
+
+    /* off-time position = CubeMX values; used alone until all checks passed */
+    s_te[0].cmp1 = sample;
+    s_te[0].cmp2 = read_v;
+    s_te[0].cmp3 = read_i;
+    s_te[1] = s_te[0];
+
     if (s_ton_max <= s_ton_min)                                         { return 40U; }
-    if (sample < s_ton_max + ns_to_ticks(PWR_SAMPLE_SETTLE_NS))         { return 41U; }
-    if (read_v < sample + ns_to_ticks(PWR_ADC_TCNV_NS))                 { return 42U; }
+    if (read_v < sample + tcnv)                                         { return 42U; }
     if (read_i < read_v + frame + ns_to_ticks(PWR_ADC_DMA_MARGIN_NS))   { return 43U; }
-    if (read_i + frame + ns_to_ticks(PWR_COMPUTE_BUDGET_NS) > per)      { return 44U; }
+    if (read_i + frame + budget > per)                                  { return 44U; }
     if (s_half + s_ton_max >= per)                                      { return 45U; }
+    /* shoot-through margin: diagonal 1 off -> diagonal 2 on (same legs) */
+    if (s_half - s_ton_max < ns_to_ticks(PWR_DIAG_GAP_MIN_NS))          { return 48U; }
+
+    /* --- sampling positions ----------------------------------------------- */
+    if (sample < settle_off)                                            { return 41U; }
+    const uint32_t ton_off_max = sample - settle_off; /* off-time position valid up to here */
+
+    if (s_ton_max > ton_off_max)
+    {
+        /* on-time of diagonal 2: same spacing as the CubeMX set, shifted */
+        if (sample > s_half + settle_on)                                { return 46U; }
+        const uint32_t shift = (s_half + settle_on) - sample;
+        const te_cmp_t hi = { sample + shift, read_v + shift, read_i + shift };
+        /* off-time position clear of the turn-off edge up to the switch-over */
+        if (ton_enter > ton_off_max)                                    { return 41U; }
+        /* on-time position: conversion done before diagonal 2 turns off, down
+         * to the switch-back point */
+        if (hi.cmp1 + tcnv > s_half + ton_exit)                         { return 46U; }
+        /* ISR keeps its compute budget before the period ends */
+        if (hi.cmp3 + frame + budget > per)                             { return 47U; }
+
+        s_te[1]        = hi;
+        s_ton_hi_enter = ton_enter;
+        s_ton_hi_exit  = ton_exit;
+    }
+    /* else: the off-time position covers the whole duty range, never switch */
 
     if (sample + ns_to_ticks(750U) > s_half)       { s_st.warn |= PWR_WARN_CNV_EDGE; }
     if ((s_spi->Init.CLKPhase == SPI_PHASE_1EDGE) && (s_st.spi_sck_hz > 25000000U))
                                                    { s_st.warn |= PWR_WARN_SPI_TIMING; }
 
-    s_read_i = read_i;
-    s_st.t_sample_ns = ticks_to_ns(sample);
-    s_st.t_read_v_ns = ticks_to_ns(read_v);
-    s_st.t_read_i_ns = ticks_to_ns(read_i);
+    s_st.t_sample_ns    = ticks_to_ns(sample);
+    s_st.t_read_v_ns    = ticks_to_ns(read_v);
+    s_st.t_read_i_ns    = ticks_to_ns(read_i);
+    s_st.t_sample_hi_ns = ticks_to_ns(s_te[1].cmp1);
     return 0U;
 }
 
@@ -423,12 +489,14 @@ PWR_RAMFUNC void PWR_ADC_DMA_IRQHandler(void)
     s_st.duty   = d;
     s_st.state  = st;
     s_st.ocp_hw_comp = ocp_hw_active() ? 1U : 0U;
+    s_st.sample_hi   = (uint8_t)s_pos_cur;
     s_st.isr_count++;
 
     const uint32_t cnt = TIM_A.CNTxR;
     s_st.isr_exit_ticks = cnt;
     if (cnt > s_st.isr_exit_ticks_max) { s_st.isr_exit_ticks_max = cnt; }
-    if (cnt < s_read_i) { s_st.isr_late_count++; }           /* counter wrapped */
+    if (cnt < s_te[s_pos_cur].cmp3) { s_st.isr_late_count++; }  /* counter wrapped */
+    s_pos_cur = s_pos_next;                      /* active from the next period   */
 
     DBG_LOW();
 }
@@ -467,6 +535,10 @@ void pwr_init(HRTIM_HandleTypeDef *hhrtim, SPI_HandleTypeDef *hspi,
     s_ton_min = ns_to_ticks(PWR_TON_MIN_NS);
     if (s_ton_min < HRTIM_CMP_MIN) { s_ton_min = HRTIM_CMP_MIN; }
     s_ton_max = (uint32_t)(((uint64_t)s_half * PWR_DUTY_MAX_PERMILLE) / 1000U);
+    s_ton_hi_enter = 0xFFFFFFFFU;                /* no switching until checked    */
+    s_ton_hi_exit  = 0U;
+    s_pos_next = 0U;                             /* start with the CubeMX values  */
+    s_pos_cur  = 0U;
 
     s_st.t_tick_ps  = (uint32_t)(1000000000000ULL / s_fhr);
     s_st.f_sw_hz    = (uint32_t)(s_fhr / per);

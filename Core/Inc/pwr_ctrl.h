@@ -78,12 +78,18 @@ typedef struct
     volatile uint32_t    isr_exit_ticks_max; /* worst case                     */
     volatile uint32_t    isr_late_count;     /* ISR finished after period end  */
 
+    /* ADC sampling position (low duty: off-time, high duty: on-time) */
+    volatile uint8_t     sample_hi;          /* 1 = this period sampled in the
+                                                on-time of diagonal 2          */
+    volatile uint32_t    sample_switches;    /* position changes since start   */
+
     /* timing read back from the CubeMX configuration */
     uint32_t             f_sw_hz;       /* switching frequency                 */
     uint32_t             t_tick_ps;     /* HRTIM tick (~184 ps)                */
     uint32_t             t_sample_ns;   /* CNVST rising (Timer E CMP1)         */
     uint32_t             t_read_v_ns;   /* CNVST_V falling (CMP2)              */
     uint32_t             t_read_i_ns;   /* CNVST_I falling (CMP3)              */
+    uint32_t             t_sample_hi_ns;/* sampling instant at high duty       */
     uint32_t             spi_sck_hz;
 } pwr_status_t;
 

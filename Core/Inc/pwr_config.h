@@ -30,18 +30,30 @@
 /* 2. Duty cycle limits                                                       */
 /*    d = on-time of ONE diagonal relative to HALF a switching period.        */
 /* ========================================================================== */
-#define PWR_DUTY_MAX_PERMILLE   750     /* max d in 1/1000; the remaining gap of
-                                           each half period hosts the ADC sample */
+#define PWR_DUTY_MAX_PERMILLE   950     /* max d in 1/1000                      */
 #define PWR_TON_MIN_NS          30      /* minimum pulse (HRTIM limit 17.7 ns)  */
+#define PWR_DIAG_GAP_MIN_NS     200     /* minimum time from diagonal 1 off to
+                                           diagonal 2 on (and back): T/2 * (1-d_max)
+                                           must exceed driver skew + turn-off time */
 
 /* ========================================================================== */
 /* 3. ADC timing margins (checked against the HRTIM Timer E compare values)   */
 /* ========================================================================== */
 #define PWR_ADC_TCNV_NS         800     /* CMP1 -> CMP2 >= tCNV,max of the
                                            MCP33131-10 (710 ns @85 C, 750 @125 C) */
-#define PWR_SAMPLE_SETTLE_NS    300     /* latest turn-off edge -> sampling     */
+#define PWR_SAMPLE_SETTLE_NS    300     /* turn-off edge -> sampling (low duty) */
 #define PWR_ADC_DMA_MARGIN_NS   250     /* CMP2 -> CMP3 >= frame + this margin  */
 #define PWR_COMPUTE_BUDGET_NS   2500    /* time the ISR needs before period end */
+
+/* Sampling position. Low duty: in the off-time after diagonal 1 turns off, at
+ * the Timer E compare values from CubeMX. High duty: in the on-time of
+ * diagonal 2, PWR_SAMPLE_ON_SETTLE_NS after it turns on (same compare spacing,
+ * shifted by the firmware). Switched per period together with the duty, with
+ * hysteresis. Only active if PWR_DUTY_MAX_PERMILLE is beyond the range of the
+ * off-time position (CMP1 - PWR_SAMPLE_SETTLE_NS).                          */
+#define PWR_SAMPLE_ON_SETTLE_NS      500  /* diagonal 2 turn-on -> sampling    */
+#define PWR_SAMPLE_HI_ENTER_PERMILLE 550  /* duty above: sample in the on-time */
+#define PWR_SAMPLE_HI_EXIT_PERMILLE  450  /* duty below: back to the off-time  */
 
 /* ========================================================================== */
 /* 4. ADC scaling: physical = raw / 65536 * FULLSCALE + OFFSET                */
@@ -143,6 +155,9 @@
 #endif
 #if (PWR_ADC_TCNV_NS < 710)
 #error "PWR_ADC_TCNV_NS shorter than tCNV,max of the MCP33131-10"
+#endif
+#if (PWR_SAMPLE_HI_EXIT_PERMILLE >= PWR_SAMPLE_HI_ENTER_PERMILLE) || (PWR_SAMPLE_HI_ENTER_PERMILLE >= 1000)
+#error "sampling position hysteresis: EXIT < ENTER < 1000 required"
 #endif
 
 #endif /* PWR_CONFIG_H */

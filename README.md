@@ -49,8 +49,10 @@ daisy-chained (SDI must be tied high).
 
 * Each HRTIM output drives the two gate drivers of one diagonal. Both transistors of a
   leg are never on together: diagonal 1 conducts only in the first half period,
-  diagonal 2 only in the second, and the duty limit (`PWR_DUTY_MAX_PERMILLE`) leaves
-  at least T/2 × (1 − d_max) = 1.25 µs between them. No HRTIM dead-time unit is used.
+  diagonal 2 only in the second, and the duty limit (`PWR_DUTY_MAX_PERMILLE` = 950)
+  leaves T/2 × (1 − d_max) = 250 ns between them. No HRTIM dead-time unit is used:
+  gate-driver delay mismatch plus switch turn-off time must fit into these 250 ns.
+  `pwr_init()` refuses a gap below `PWR_DIAG_GAP_MIN_NS` (config check 48).
   `pwr_init()` checks the TA1/TA2 set/reset sources, polarity and dead-time bit
   (config checks 36/37) and keeps the bridge disabled if they differ.
 * Tie SDI and DVIO of both ADCs to 3.3 V.
@@ -98,7 +100,7 @@ daisy-chained (SDI must be tied high).
 `pwr_init()` reads the timing back from the HRTIM registers and checks it against the
 limits in `pwr_config.h`. If something does not fit, `pwr_status()->fault` gets
 `PWR_FAULT_CONFIG`, `config_check` holds the number of the failed check (see
-`check_ocp_config()` 50–61, `check_dma_config()` 1–21, `check_timing_config()` 30–45),
+`check_ocp_config()` 50–61, `check_dma_config()` 1–21, `check_timing_config()` 30–48),
 and the bridge cannot be enabled.
 
 ### Changing the timing in CubeMX
@@ -107,25 +109,42 @@ All values are HRTIM ticks of 1/(170 MHz × 32) = 183.8 ps.
 
 * **Switching frequency**: Period of Timer A and E = 5.44 GHz / f_sw. Then set
   CMP2 of Timer A to Period/2 (checked) and move the Timer E compares.
-* **Sampling instant** (Timer E CMP1) must lie after the latest possible turn-off edge
-  plus `PWR_SAMPLE_SETTLE_NS`: CMP1 ≥ Period/2 × `PWR_DUTY_MAX_PERMILLE`/1000 + settle.
+* **Sampling instant** (Timer E CMP1) is the low-duty position, in the off-time after
+  diagonal 1 turns off. It must lie at least `PWR_SAMPLE_SETTLE_NS` after the turn-off
+  edge at the switch-over duty: CMP1 ≥ Period/2 × `PWR_SAMPLE_HI_ENTER_PERMILLE`/1000
+  + settle (check 41). If `PWR_DUTY_MAX_PERMILLE` stays below CMP1 − settle, the
+  position never switches.
 * **CMP2** ≥ CMP1 + `PWR_ADC_TCNV_NS` (conversion time).
 * **CMP3** ≥ CMP2 + 16 SCLK periods + `PWR_ADC_DMA_MARGIN_NS`.
 * CMP3 + frame + `PWR_COMPUTE_BUDGET_NS` ≤ Period (time for the ISR).
+* The high-duty position is derived by the firmware: the same three compares,
+  shifted so that CMP1 = Period/2 + `PWR_SAMPLE_ON_SETTLE_NS`. Its conversion must end
+  before diagonal 2 turns off at the switch-back duty (check 46), and its CMP3 must
+  still leave the ISR budget (check 47).
 
 ## 4. Timing (defaults)
 
-| t (µs) | Event |
-|---|---|
-| 0 | TA1 high: Q1/Q4 on, new duty becomes active |
-| ≤ 3.75 | TA1 low: Q1/Q4 off (d ≤ 0.75) |
-| **4.10** | both CNVST rise → both ADCs sample |
-| 4.85 | conversion done (tCNV,max 750 ns @125 °C) |
-| 4.90 | CNVST_V falls, frame 1 (377 ns @ 42.5 MHz) |
-| 5.00 | TA2 high: Q2/Q3 on (off again at ≤ 8.75) |
-| 5.53 | CNVST_I falls, frame 2 |
-| ~5.95 | both words in RAM → control ISR |
-| 10.0 | new duty active |
+The bridge runs from d = 0 to 0.95. Each half period has two edge-free stretches,
+the on-time (d × 5 µs) and the off-time ((1 − d) × 5 µs); the ADCs need ~1.1 µs of
+quiet (settling + conversion). At low duty only the off-time is long enough, at high
+duty only the on-time. So the sampling instant moves with the duty, never the PWM:
+
+| | Low duty (off-time position) | High duty (on-time position) |
+|---|---|---|
+| Used for | d < 0.55, back below 0.45 | d > 0.55, until it falls below 0.45 |
+| Valid range | d ≤ 0.76 | d ≥ 0.26 |
+| Both CNVST rise (sample) | **4.10 µs** (CMP1 22304) | **5.50 µs** (CMP1 29920) |
+| Conversion done | 4.85 µs | 6.25 µs |
+| CNVST_V falls, frame 1 | 4.90 µs (CMP2 26656) | 6.30 µs (CMP2 34272) |
+| CNVST_I falls, frame 2 | 5.53 µs (CMP3 30067) | 6.93 µs (CMP3 37683) |
+| Both words in RAM → control ISR | ~5.95 µs | ~7.35 µs |
+
+Edges of the bridge: TA1 on at 0, off at d × 5 µs (≤ 4.75 µs); TA2 on at 5.00 µs, off
+at 5.00 + d × 5 µs (≤ 9.75 µs). The new duty and the matching sampling position are
+written in the same update-disable block and take effect together at the next period
+start (10.0 µs). `pwr_status()` shows the position of the last sample (`sample_hi`)
+and the number of switches (`sample_switches`); a steadily rising count would mean
+the duty oscillates across the whole hysteresis band.
 
 ## 5. Code structure
 
@@ -155,8 +174,9 @@ same in Debug and Release builds.
 | Group | Macros |
 |---|---|
 | ISR binding | `PWR_ADC_DMA_CHANNEL`, `PWR_ADC_DMA_IRQHandler` (must match the SPI1_RX DMA channel in CubeMX) |
-| Duty | `PWR_DUTY_MAX_PERMILLE`, `PWR_TON_MIN_NS` |
+| Duty | `PWR_DUTY_MAX_PERMILLE`, `PWR_TON_MIN_NS`, `PWR_DIAG_GAP_MIN_NS` |
 | Timing margins | `PWR_ADC_TCNV_NS`, `PWR_SAMPLE_SETTLE_NS`, `PWR_ADC_DMA_MARGIN_NS`, `PWR_COMPUTE_BUDGET_NS` |
+| Sampling position | `PWR_SAMPLE_ON_SETTLE_NS`, `PWR_SAMPLE_HI_ENTER_PERMILLE`, `PWR_SAMPLE_HI_EXIT_PERMILLE` |
 | Scaling | `PWR_V_FULLSCALE_V`, `PWR_V_OFFSET_V`, `PWR_I_FULLSCALE_A`, `PWR_I_OFFSET_A` — **placeholders** |
 | Limits | `PWR_VSET_MAX_V`, `PWR_ISET_MAX_A`, `PWR_OVP_V`, `PWR_OCP_A`, `PWR_VREF_SLEW_V_PER_S`, `PWR_WATCHDOG_MS` |
 | Hardware OCP | `PWR_OCP_HW_A` (start-up trip level), `PWR_OCP_HW_SENSE_V_PER_A`, `PWR_OCP_HW_SENSE_OFFSET_V` — **placeholders**, `PWR_DAC_VREF_V` |
@@ -199,11 +219,15 @@ duty that was actually applied (anti-windup for clamping and CV/CC hand-over).
    * `fault == 0`, `config_check == 0`, `warn == 0`
      (`PWR_WARN_ADC_RECAL`: an ADC did not release SDO after recalibration).
    * `isr_count` rises by `f_sw_hz` per second, `isr_late_count == 0`,
-     `isr_exit_ticks_max × t_tick_ps` well below the period.
+     `isr_exit_ticks_max × t_tick_ps` below the period (at high duty the ISR starts
+     ~1.4 µs later, so this is the number to watch there).
    * `raw_v` / `raw_i` match known test voltages at the ADC inputs.
 2. Scope, triggered on PA8: PA9 is the same pulse shifted by 5 µs and never overlaps
    PA8; PC8/PC9 rise together at 4.1 µs, PC8 falls at 4.9 µs, PC9 at 5.53 µs; two
-   bursts of 16 clocks on PA5; PB1 pulses once per period.
+   bursts of 16 clocks on PA5; PB1 pulses once per period. Above d = 0.55 the CNVST
+   pattern moves to 5.5 / 6.3 / 6.93 µs (`sample_hi` = 1), below 0.45 it returns.
+   With the power stage running, check the ADC inputs right after the TA2 turn-on
+   edge: the ringing must have settled within `PWR_SAMPLE_ON_SETTLE_NS` (500 ns).
 3. Bad readings (powers of two, noisy LSBs): the falling-edge capture relies on the
    ADC's output hold time. In CubeMX set SPI1 *Clock Phase* = 1 Edge and prescaler 8
    (21.25 MHz), then set Timer E CMP3 ≥ 32112 (CMP2 + 753 ns frame + 250 ns margin).
